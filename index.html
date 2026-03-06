@@ -489,6 +489,7 @@
               <option value="fragment">Fragment</option>
               <option value="signal">Signal</option>
               <option value="bands">Bands</option>
+              <option value="halftone">Halftone</option>
             </select>
           </div>
           <div>
@@ -853,16 +854,17 @@
       const scaleY = height / offCanvas.height;
 
       if (mode === 'contour') {
-        const limited = points.slice(0, Math.min(points.length, 1400));
+        const limited = points.slice(0, Math.min(points.length, 2200));
         artifact.points = limited.map((p, i) => ({
           x: p.x * scaleX,
           y: p.y * scaleY,
           ox: p.x * scaleX,
           oy: p.y * scaleY,
           edge: p.edge,
+          brightness: p.brightness,
           size: p.size,
           angle: (i * 0.17) + seed * 0.0004,
-          drift: (0.2 + (p.edge / 255) * 1.2) * (motion / 100)
+          drift: (0.35 + (p.edge / 255) * 1.6) * (0.45 + motion / 120)
         }));
 
         for (let i = 0; i < artifact.points.length; i++) {
@@ -873,10 +875,10 @@
             const dx = a.ox - b.ox;
             const dy = a.oy - b.oy;
             const dist = Math.hypot(dx, dy);
-            if (dist < 54) nearest.push({ j, dist });
+            if (dist < 110) nearest.push({ j, dist });
           }
           nearest.sort((m, n) => m.dist - n.dist);
-          nearest.slice(0, 2).forEach(n => artifact.lines.push([i, n.j, n.dist]));
+          nearest.slice(0, 4).forEach(n => artifact.lines.push([i, n.j, n.dist]));
         }
       }
 
@@ -941,7 +943,6 @@
           }
           const brightness = count ? total / count : 0;
 
-          // threshold gently influences whether the band exists (less aggressive)
           const densityGate = Math.max(8, 52 - density * 0.28);
           if (brightness < densityGate) continue;
 
@@ -958,6 +959,28 @@
         }
       }
 
+      if (mode === 'halftone') {
+        const step = Math.max(8, Math.floor(cellSize * 0.7 + (100 - density) * 0.08));
+        for (let y = 0; y < offCanvas.height; y += step) {
+          for (let x = 0; x < offCanvas.width; x += step) {
+            const idx = (y * offCanvas.width + x) * 4;
+            const r = imageData.data[idx];
+            const g = imageData.data[idx + 1];
+            const b = imageData.data[idx + 2];
+            const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+            const darkness = 1 - brightness / 255;
+            if (darkness < 0.08) continue;
+            artifact.points.push({
+              x: x * scaleX,
+              y: y * scaleY,
+              baseR: Math.max(1.5, darkness * cellSize * 0.7),
+              phase: (x + y + seed) * 0.01,
+              darkness
+            });
+          }
+        }
+      }
+
       currentArtifact = artifact;
       previousFrameImage = null;
       sourceLabel.textContent = currentSourceType.toUpperCase();
@@ -968,41 +991,52 @@
 
     function drawContour(artifact, t) {
       const { palette, points, lines, motion, cellSize } = artifact;
+
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const dx = Math.cos(t * 0.0011 + p.angle) * p.drift * 8;
+        const dy = Math.sin(t * 0.0014 + p.angle * 0.8) * p.drift * 8;
+        p.x = p.ox + dx;
+        p.y = p.oy + dy;
+      }
+
       ctx.lineWidth = 1;
-      ctx.strokeStyle = palette.soft;
       for (const [ai, bi, dist] of lines) {
         const a = points[ai];
         const b = points[bi];
-        ctx.globalAlpha = Math.max(0.06, 0.22 - dist / 200);
+        ctx.globalAlpha = Math.max(0.04, 0.18 - dist / 180);
+        ctx.strokeStyle = palette.soft;
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
       }
-      ctx.globalAlpha = 1;
 
       for (let i = 0; i < points.length; i++) {
         const p = points[i];
-        const dx = Math.cos(t * 0.0012 + p.angle) * p.drift * 7;
-        const dy = Math.sin(t * 0.0014 + p.angle * 0.8) * p.drift * 7;
-        p.x = p.ox + dx;
-        p.y = p.oy + dy;
-        // larger contour blocks
-        // make contour blocks much larger
-        const size = p.size > 1.8 ? cellSize : Math.max(16, Math.round(cellSize * 0.66));
+        const size = p.size > 1.7 ? cellSize : Math.max(16, Math.round(cellSize * 0.66));
+        const stretchX = p.edge > 80 ? 1.6 : 1;
+        const stretchY = p.brightness > 160 ? 0.8 : 1;
+        ctx.globalAlpha = 0.2 + Math.min(0.6, p.brightness / 255);
         ctx.fillStyle = palette.line;
-        ctx.fillRect(Math.round(p.x), Math.round(p.y), size, size);
+        ctx.fillRect(
+          Math.round(p.x),
+          Math.round(p.y),
+          Math.round(size * stretchX),
+          Math.round(size * stretchY)
+        );
       }
 
-      ctx.globalAlpha = 0.45;
-      for (let i = 0; i < points.length; i += 7) {
+      ctx.globalAlpha = 0.18;
+      for (let i = 0; i < points.length; i += 5) {
         const p = points[i];
+        const ring = Math.max(10, Math.round(cellSize * 0.38));
         ctx.strokeStyle = palette.line;
         ctx.strokeRect(
           Math.round(p.x) - 2,
           Math.round(p.y) - 2,
-          Math.max(14, Math.round(cellSize * 0.42)) + Math.sin(t * 0.002 + i) * (motion * 0.03 + 2.5),
-          Math.max(14, Math.round(cellSize * 0.42))
+          ring + Math.sin(t * 0.002 + i) * (motion * 0.03 + 2.5),
+          ring
         );
       }
       ctx.globalAlpha = 1;
@@ -1080,6 +1114,21 @@
       ctx.globalAlpha = 1;
     }
 
+    function drawHalftone(artifact, t) {
+      const { palette, points, motion } = artifact;
+      ctx.fillStyle = palette.line;
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const pulse = Math.sin(t * 0.002 + p.phase) * (motion * 0.018);
+        const r = Math.max(1, p.baseR + pulse);
+        ctx.globalAlpha = Math.min(0.9, 0.2 + p.darkness * 0.75);
+        ctx.beginPath();
+        ctx.arc(Math.round(p.x), Math.round(p.y), r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
     function renderArtifact() {
       if (!currentArtifact) {
         drawIdle();
@@ -1093,6 +1142,7 @@
       if (currentArtifact.type === 'fragment') drawFragment(currentArtifact, t);
       if (currentArtifact.type === 'signal') drawSignal(currentArtifact, t);
       if (currentArtifact.type === 'bands') drawBands(currentArtifact, t);
+      if (currentArtifact.type === 'halftone') drawHalftone(currentArtifact, t);
 
       animationFrame = requestAnimationFrame(renderArtifact);
     }
@@ -1166,7 +1216,7 @@
     }
 
     function randomiseSettings() {
-      const modes = ['contour', 'fragment', 'signal', 'bands'];
+      const modes = ['contour', 'fragment', 'signal', 'bands', 'halftone'];
       const themes = ['scanner', 'ember', 'toxic', 'ghost'];
       modeSelect.value = modes[Math.floor(Math.random() * modes.length)];
       themeSelect.value = themes[Math.floor(Math.random() * themes.length)];
