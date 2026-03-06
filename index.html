@@ -45,7 +45,7 @@
 
     .app {
       display: grid;
-      grid-template-columns: 500px 1fr; 
+      grid-template-columns: 500px 1fr; /* sidebar width set to 500px as requested */ /* sidebar fixed, canvas gets remaining space */ /* give the canvas much more space */
       width: 100%;
       height: 100%;
       gap: 0;
@@ -488,6 +488,7 @@
               <option value="contour">Contour</option>
               <option value="fragment">Fragment</option>
               <option value="signal">Signal</option>
+              <option value="bands">Bands</option>
             </select>
           </div>
           <div>
@@ -525,14 +526,7 @@
           <input id="motionRange" type="range" min="0" max="100" value="40" />
         </div>
 
-        <div>
-          <div class="value-line">
-            <label for="thresholdRange" style="margin:0">Threshold</label>
-            <span id="thresholdValue">120</span>
-          </div>
-          <input id="thresholdRange" type="range" min="0" max="255" value="120" />
-        </div>
-      </div>
+        
 
       <div class="group">
         <div class="small-row">
@@ -549,7 +543,7 @@
       <div class="group">
         <div class="tag"><span class="tag-dot"></span><span id="statusChip">Idle</span></div>
         <div class="footer-note">
-          High-contrast photos work best. Try changing threshold a lot between scans, then use Scan again to build up rougher textures.
+          High-contrast photos work best. Try changing cell size or density between scans, then use Scan again to build up rougher textures.
         </div>
       </div>
     </aside>
@@ -575,14 +569,13 @@
           </div>
           <div class="corner bottom-left">
             <div><span class="mono-dim">Density</span> <strong id="densityLabel">42</strong></div>
-            <div><span class="mono-dim">Threshold</span> <strong id="thresholdLabel">120</strong></div>
+            <div><span class="mono-dim">Cell size</span> <strong id="cellSizeLabel">48</strong></div>
           </div>
           <div class="corner bottom-right">
             <div><span class="mono-dim">Motion</span> <strong id="motionLabel">40</strong></div>
             <div><span class="mono-dim">Phase</span> <strong id="phaseLabel">IDLE</strong></div>
           </div>
-            <div>PHASE // <span class="mono-dim" id="phaseLabel">IDLE</span></div>
-          </div>
+        </div>
         </div>
         <div class="flash" id="flash"></div>
       </div>
@@ -604,7 +597,7 @@
     const cellSizeRange = document.getElementById('cellSizeRange');
     const densityRange = document.getElementById('densityRange');
     const motionRange = document.getElementById('motionRange');
-    const thresholdRange = document.getElementById('thresholdRange');
+    
     const scanBtn = document.getElementById('scanBtn');
     const rescanBtn = document.getElementById('rescanBtn');
     const clearBtn = document.getElementById('clearBtn');
@@ -616,10 +609,11 @@
     const cellSizeValue = document.getElementById('cellSizeValue');
     const densityValue = document.getElementById('densityValue');
     const motionValue = document.getElementById('motionValue');
-    const thresholdValue = document.getElementById('thresholdValue');
+    
     const densityLabel = document.getElementById('densityLabel');
+    const cellSizeLabel = document.getElementById('cellSizeLabel');
     const motionLabel = document.getElementById('motionLabel');
-    const thresholdLabel = document.getElementById('thresholdLabel');
+    
     const modeLabel = document.getElementById('modeLabel');
     const analysisLabel = document.getElementById('analysisLabel');
     const sourceLabel = document.getElementById('sourceLabel');
@@ -700,10 +694,9 @@
       cellSizeValue.textContent = cellSizeRange.value;
       densityValue.textContent = densityRange.value;
       motionValue.textContent = motionRange.value;
-      thresholdValue.textContent = thresholdRange.value;
+      cellSizeLabel.textContent = cellSizeRange.value;
       densityLabel.textContent = densityRange.value;
       motionLabel.textContent = motionRange.value;
-      thresholdLabel.textContent = thresholdRange.value;
       modeLabel.textContent = modeSelect.value.toUpperCase();
     }
 
@@ -790,7 +783,7 @@
       }
     }
 
-    function extractPointsFromImageData(imageData, density, threshold) {
+    function extractPointsFromImageData(imageData, density) {
       const { data, width: w, height: h } = imageData;
       // bigger sampling step so each visual cell becomes larger
       // larger sampling grid so each generated cell covers more space
@@ -815,7 +808,8 @@
           const bottom = 0.299 * data[bIndex] + 0.587 * data[bIndex + 1] + 0.114 * data[bIndex + 2];
           const edge = Math.abs(right - left) + Math.abs(bottom - top);
 
-          if (brightness > threshold || edge > threshold * 0.55) {
+          // make threshold much more influential
+          if (brightness > 36 || edge > 52) {
             points.push({
               x,
               y,
@@ -835,12 +829,11 @@
       const imageData = offCtx.getImageData(0, 0, offCanvas.width, offCanvas.height);
       const cellSize = Number(cellSizeRange.value);
       const density = Number(densityRange.value);
-      const threshold = Number(thresholdRange.value);
       const motion = Number(motionRange.value);
       const mode = modeSelect.value;
       const text = textInput.value.trim();
       const palette = palettes[themeSelect.value];
-      const points = extractPointsFromImageData(imageData, density, threshold);
+      const points = extractPointsFromImageData(imageData, density);
       const seed = hashText(text || String(Date.now()));
 
       const artifact = {
@@ -933,6 +926,38 @@
         }
       }
 
+      if (mode === 'bands') {
+        const rowStep = Math.max(4, Math.floor((cellSize * 0.45) - density * 0.08 + 10));
+        for (let y = 0; y < offCanvas.height; y += rowStep) {
+          let total = 0;
+          let count = 0;
+          for (let x = 0; x < offCanvas.width; x += 6) {
+            const idx = (y * offCanvas.width + x) * 4;
+            const r = imageData.data[idx];
+            const g = imageData.data[idx + 1];
+            const b = imageData.data[idx + 2];
+            total += 0.299 * r + 0.587 * g + 0.114 * b;
+            count += 1;
+          }
+          const brightness = count ? total / count : 0;
+
+          // threshold gently influences whether the band exists (less aggressive)
+          const densityGate = Math.max(8, 52 - density * 0.28);
+          if (brightness < densityGate) continue;
+
+          const length = (brightness / 255) * width * 0.9;
+          artifact.points.push({
+            y: (y / offCanvas.height) * height,
+            length,
+            baseLength: length,
+            thickness: Math.max(8, (cellSize * 0.7) + rowStep * (height / offCanvas.height) * 0.35),
+            offset: ((seed + y * 17) % 200) - 100,
+            brightness,
+            phase: y * 0.01 + seed * 0.0001
+          });
+        }
+      }
+
       currentArtifact = artifact;
       previousFrameImage = null;
       sourceLabel.textContent = currentSourceType.toUpperCase();
@@ -1005,8 +1030,6 @@
     function drawSignal(artifact, t) {
       const { palette, points, lines, textSeed, cellSize } = artifact;
       ctx.fillStyle = palette.line;
-      // larger glyphs for signal mode
-      // make signal glyphs much larger
       ctx.font = `700 ${Math.max(22, Math.round(cellSize * 1.25))}px "IBM Plex Mono", monospace`;
       const glyphs = ['#', '/', '0', '4', 'X', 'S', 'I', 'H', 'M', '8'];
 
@@ -1038,6 +1061,25 @@
       ctx.globalAlpha = 1;
     }
 
+    function drawBands(artifact, t) {
+      const { palette, points, motion, cellSize } = artifact;
+      ctx.fillStyle = palette.line;
+      for (let i = 0; i < points.length; i++) {
+        const band = points[i];
+        const wave = Math.sin(t * 0.0015 + band.phase) * (motion * 0.4 + 12);
+        const length = Math.max(30, band.baseLength + wave);
+        const x = (width - length) * 0.5 + Math.sin(t * 0.001 + band.phase) * band.offset * 0.12;
+        ctx.globalAlpha = 0.16 + (band.brightness / 255) * 0.7;
+        ctx.fillRect(
+          Math.round(x),
+          Math.round(band.y),
+          Math.round(length),
+          Math.max(8, Math.round(band.thickness + cellSize * 0.15))
+        );
+      }
+      ctx.globalAlpha = 1;
+    }
+
     function renderArtifact() {
       if (!currentArtifact) {
         drawIdle();
@@ -1050,6 +1092,7 @@
       if (currentArtifact.type === 'contour') drawContour(currentArtifact, t);
       if (currentArtifact.type === 'fragment') drawFragment(currentArtifact, t);
       if (currentArtifact.type === 'signal') drawSignal(currentArtifact, t);
+      if (currentArtifact.type === 'bands') drawBands(currentArtifact, t);
 
       animationFrame = requestAnimationFrame(renderArtifact);
     }
@@ -1123,14 +1166,13 @@
     }
 
     function randomiseSettings() {
-      const modes = ['contour', 'fragment', 'signal'];
+      const modes = ['contour', 'fragment', 'signal', 'bands'];
       const themes = ['scanner', 'ember', 'toxic', 'ghost'];
       modeSelect.value = modes[Math.floor(Math.random() * modes.length)];
       themeSelect.value = themes[Math.floor(Math.random() * themes.length)];
       cellSizeRange.value = String(24 + Math.floor(Math.random() * 72));
       densityRange.value = String(18 + Math.floor(Math.random() * 70));
       motionRange.value = String(10 + Math.floor(Math.random() * 85));
-      thresholdRange.value = String(40 + Math.floor(Math.random() * 170));
       updateLabels();
     }
 
@@ -1165,7 +1207,7 @@
       reader.readAsDataURL(file);
     });
 
-    [cellSizeRange, densityRange, motionRange, thresholdRange, modeSelect, themeSelect].forEach(el => {
+    [cellSizeRange, densityRange, motionRange, modeSelect, themeSelect].forEach(el => {
       el.addEventListener('input', () => {
         updateLabels();
         if (currentArtifact) renderArtifact();
