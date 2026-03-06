@@ -674,7 +674,13 @@
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawIdle();
+
+      // On mobile, avoid wiping the artwork whenever viewport height changes during scroll.
+      if (currentArtifact) {
+        renderArtifact();
+      } else {
+        drawIdle();
+      }
     }
 
     function setStatus(main, chip = main) {
